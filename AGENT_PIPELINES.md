@@ -589,3 +589,457 @@ response = await root_agent.invoke(
 ```
 
 ---
+
+## Plan-Re-Act Pipeline
+
+**Purpose:** Structured reasoning pipeline that forces the agent to plan before acting, with explicit tags for planning, reasoning, actions, and final answers.
+
+**When Used:** Complex multi-step problems requiring explicit planning, tasks needing transparent reasoning, agents that benefit from structured thinking.
+
+**Location:** `/src/google/adk/planners/plan_re_act_planner.py`
+
+### Pipeline Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                   PLAN-RE-ACT PIPELINE                              │
+└─────────────────────────────────────────────────────────────────────┘
+
+USER QUERY: "Find the average age of employees in the Engineering dept"
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 1. PLANNING INSTRUCTION INJECTION                                │
+│                                                                   │
+│ ┌──────────────────────────────────────────────────────────┐     │
+│ │ NL Planning Request Processor                            │     │
+│ │ • build_planning_instruction()                           │     │
+│ │ • Returns comprehensive planning prompt                  │     │
+│ └──────────────────────────────────────────────────────────┘     │
+│                           ▼                                       │
+│ ┌──────────────────────────────────────────────────────────┐     │
+│ │ Inject Planning Prompt (see PROMPTS_DOCUMENTATION.md)   │     │
+│ │                                                          │     │
+│ │ Key requirements:                                        │     │
+│ │ 1. Create plan under /*PLANNING*/ tag                   │     │
+│ │ 2. Execute with tools under /*ACTION*/ tag               │     │
+│ │ 3. Reason between actions under /*REASONING*/ tag        │     │
+│ │ 4. Provide final answer under /*FINAL_ANSWER*/ tag       │     │
+│ │ 5. If plan fails, revise under /*REPLANNING*/ tag        │     │
+│ └──────────────────────────────────────────────────────────┘     │
+└───────────────────────────┬───────────────────────────────────────┘
+                            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 2. LLM GENERATES STRUCTURED RESPONSE                             │
+│                                                                   │
+│ ┌──────────────────────────────────────────────────────────┐     │
+│ │ /*PLANNING*/                                             │     │
+│ │ To find the average age of Engineering employees:       │     │
+│ │ 1. Load employee data                                    │     │
+│ │ 2. Filter for Engineering department                     │     │
+│ │ 3. Extract ages                                          │     │
+│ │ 4. Calculate average                                     │     │
+│ └──────────────────────────────────────────────────────────┘     │
+│                           ▼                                       │
+│ ┌──────────────────────────────────────────────────────────┐     │
+│ │ /*ACTION*/                                               │     │
+│ │ df = load_employee_data()                                │     │
+│ │ print(df.head())                                         │     │
+│ └──────────────────────────────────────────────────────────┘     │
+│                           ▼                                       │
+│ [Tool execution happens]                                         │
+│                           ▼                                       │
+│ ┌──────────────────────────────────────────────────────────┐     │
+│ │ /*REASONING*/                                            │     │
+│ │ The data loaded successfully. I can see employee         │     │
+│ │ records with name, age, and department columns.          │     │
+│ │ Now I'll filter for Engineering department.              │     │
+│ └──────────────────────────────────────────────────────────┘     │
+│                           ▼                                       │
+│ ┌──────────────────────────────────────────────────────────┐     │
+│ │ /*ACTION*/                                               │     │
+│ │ eng_df = df[df['department'] == 'Engineering']          │     │
+│ │ avg_age = eng_df['age'].mean()                           │     │
+│ │ print(avg_age)                                           │     │
+│ └──────────────────────────────────────────────────────────┘     │
+│                           ▼                                       │
+│ [Tool execution: Result = 32.5]                                  │
+│                           ▼                                       │
+│ ┌──────────────────────────────────────────────────────────┐     │
+│ │ /*REASONING*/                                            │     │
+│ │ Successfully calculated the average age of Engineering   │     │
+│ │ employees. The result is 32.5 years.                     │     │
+│ └──────────────────────────────────────────────────────────┘     │
+│                           ▼                                       │
+│ ┌──────────────────────────────────────────────────────────┐     │
+│ │ /*FINAL_ANSWER*/                                         │     │
+│ │ The average age of employees in the Engineering         │     │
+│ │ department is 32.5 years.                                │     │
+│ └──────────────────────────────────────────────────────────┘     │
+└───────────────────────────┬───────────────────────────────────────┘
+                            ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 3. RESPONSE PROCESSING                                           │
+│                                                                   │
+│ ┌──────────────────────────────────────────────────────────┐     │
+│ │ NL Planning Response Processor                           │     │
+│ │ • process_planning_response(response_parts)              │     │
+│ │                                                          │     │
+│ │ Processing rules:                                        │     │
+│ │ 1. Parts with /*PLANNING*/, /*REASONING*/, /*ACTION*/,   │     │
+│ │    /*REPLANNING*/ → marked as thought (hidden)           │     │
+│ │                                                          │     │
+│ │ 2. Text before /*FINAL_ANSWER*/ → thought part           │     │
+│ │                                                          │     │
+│ │ 3. Text after /*FINAL_ANSWER*/ → visible response       │     │
+│ │                                                          │     │
+│ │ 4. Function calls → preserved and executed               │     │
+│ └──────────────────────────────────────────────────────────┘     │
+│                           ▼                                       │
+│ ┌──────────────────────────────────────────────────────────┐     │
+│ │ Processed Response:                                      │     │
+│ │                                                          │     │
+│ │ Thought parts (hidden from user):                       │     │
+│ │ - /*PLANNING*/: 1. Load data, 2. Filter...              │     │
+│ │ - /*REASONING*/: Data loaded successfully...            │     │
+│ │ - /*REASONING*/: Successfully calculated...             │     │
+│ │                                                          │     │
+│ │ Visible part (shown to user):                           │     │
+│ │ "The average age of employees in the Engineering        │     │
+│ │  department is 32.5 years."                              │     │
+│ └──────────────────────────────────────────────────────────┘     │
+└──────────────────────────────────────────────────────────────────┘
+
+REPLANNING SCENARIO (when initial plan fails):
+───────────────────────────────────────────────
+
+/*PLANNING*/
+1. Load data
+2. Use get_department_stats('Engineering')
+    │
+    ▼
+/*ACTION*/
+result = get_department_stats('Engineering')
+    │
+    ▼
+[Tool Error: Function 'get_department_stats' not found]
+    │
+    ▼
+/*REASONING*/
+The tool I planned to use doesn't exist. I need to revise
+my approach and use available tools instead.
+    │
+    ▼
+/*REPLANNING*/  ◄── New plan replaces failed plan
+1. Load employee data using load_data()
+2. Filter manually for Engineering department
+3. Calculate average using pandas operations
+    │
+    ▼
+[Continue with revised plan...]
+```
+
+### Prompt Integration
+
+The Plan-Re-Act planner injects its planning prompt at stage 8 of the request pipeline (see [Planning Prompts in PROMPTS_DOCUMENTATION.md](PROMPTS_DOCUMENTATION.md#plan-re-act-planner-instruction)).
+
+**Prompt Construction:**
+
+```python
+# From plan_re_act_planner.py
+def build_planning_instruction() -> str:
+    return '\n\n'.join([
+        high_level_preamble,      # Process: plan → execute → answer
+        planning_preamble,        # Planning requirements
+        reasoning_preamble,       # Reasoning requirements
+        final_answer_preamble,    # Final answer requirements
+        tool_code_preamble,       # Tool code requirements
+        user_input_preamble,      # Clarification guidance
+    ])
+```
+
+### Code Example
+
+```python
+# Enable Plan-Re-Act planning
+from google.adk.planners.plan_re_act_planner import PlanReActPlanner
+
+agent = LlmAgent(
+    name="data_analyst",
+    model="gemini-2.5-flash",
+    instruction="You are a data analyst expert.",
+    planner=PlanReActPlanner(),  # ◄── Enables structured planning
+    tools=[load_data, filter_data, calculate_stats],
+)
+
+# Agent will now:
+# 1. Create explicit plan before acting
+# 2. Provide reasoning between tool calls
+# 3. Show work transparently (in thought parts)
+# 4. Deliver clean final answer to user
+```
+
+---
+
+## Tool Execution Pipeline
+
+**Purpose:** Execute tool functions with callbacks, error handling, and result integration.
+
+**Location:** `/src/google/adk/tools/tool_handler.py`
+
+### Tool Execution Flow
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│              TOOL EXECUTION PIPELINE                         │
+└──────────────────────────────────────────────────────────────┘
+
+LLM Response contains function_call
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. FUNCTION CALL DETECTION                              │
+│                                                          │
+│ function_call {                                          │
+│   name: "get_weather"                                    │
+│   args: {"city": "Tokyo", "units": "metric"}             │
+│ }                                                        │
+└────────────────────────┬─────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. BEFORE_TOOL_CALLBACK                                 │
+│                                                          │
+│ • Logging and monitoring                                │
+│ • Validation of tool arguments                          │
+│ • Permission checks                                     │
+│ • Rate limiting                                         │
+└────────────────────────┬─────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. TOOL FUNCTION EXECUTION                              │
+│                                                          │
+│ ┌─────────────────────────────────────────────────┐     │
+│ │ def get_weather(city: str, units: str) -> str:  │     │
+│ │     # Fetch weather data                        │     │
+│ │     return f"Tokyo: 18°C, Partly cloudy"        │     │
+│ └─────────────────────────────────────────────────┘     │
+│                                                          │
+│ Result: "Tokyo: 18°C, Partly cloudy"                     │
+└────────────────────────┬─────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│ 4. AFTER_TOOL_CALLBACK                                  │
+│                                                          │
+│ • Result logging                                        │
+│ • Performance tracking                                  │
+│ • Result transformation                                 │
+│ • Caching                                               │
+└────────────────────────┬─────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│ 5. FUNCTION RESPONSE CREATION                           │
+│                                                          │
+│ function_response {                                      │
+│   name: "get_weather"                                    │
+│   response: "Tokyo: 18°C, Partly cloudy"                 │
+│ }                                                        │
+└────────────────────────┬─────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│ 6. ADD TO CONVERSATION HISTORY                          │
+│                                                          │
+│ Updated history:                                        │
+│ - user: "What's the weather in Tokyo?"                  │
+│ - model: [function_call: get_weather]                   │
+│ - tool: [function_response: "Tokyo: 18°C..."]           │
+└────────────────────────┬─────────────────────────────────┘
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│ 7. LOOP BACK TO LLM                                     │
+│                                                          │
+│ LLM now has tool response and can:                      │
+│ - Use result to answer user                             │
+│ - Call more tools if needed                             │
+│ - Provide final response                                │
+└─────────────────────────────────────────────────────────┘
+
+ERROR HANDLING:
+──────────────
+
+Tool raises exception
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ ERROR_CALLBACK                                          │
+│                                                          │
+│ • Catch and log exception                               │
+│ • Format error message for LLM                          │
+│ • Return error as function_response                     │
+│                                                          │
+│ function_response {                                      │
+│   name: "get_weather"                                    │
+│   response: "Error: API rate limit exceeded"            │
+│ }                                                        │
+└────────────────────────┬─────────────────────────────────┘
+                         │
+                         └─► LLM receives error and can retry or explain
+```
+
+### Tool Context and State Access
+
+```python
+from google.adk.tools.tool_context import ToolContext
+
+def save_preference(
+    preference_name: str,
+    value: str,
+    tool_context: ToolContext  # ◄── Special parameter
+) -> str:
+    """Save user preference to session state."""
+
+    # Access session state
+    tool_context.state[f"pref_{preference_name}"] = value
+
+    # Access user info
+    user_id = tool_context.invocation_context.user_id
+
+    # Access agent info
+    agent_name = tool_context.invocation_context.agent.name
+
+    return f"Saved {preference_name} = {value}"
+
+# ToolContext provides:
+# - state: Session state dict (persisted across invocations)
+# - invocation_context: Full context including user, agent, session
+# - Automatic injection by framework
+```
+
+---
+
+## Prompt Flow Summary
+
+### Complete Prompt Assembly Order
+
+```
+STAGE-BY-STAGE PROMPT CONSTRUCTION
+═══════════════════════════════════════════════════════════════
+
+STAGE 1-3: Setup
+────────────────
+├─ Basic Processor: model, config
+├─ Auth Processor: authentication
+└─ Confirmation Processor: tool confirmation
+
+STAGE 4: INSTRUCTION INJECTION ◄─── PRIMARY PROMPT POINT
+─────────────────────────────────────────────────────────
+├─ Global Instruction (from GlobalInstructionPlugin)
+│  "All agents must protect user privacy..."
+│
+├─ Static Instruction (cached, unchanging)
+│  Content(parts=[Part(text="""
+│    You are Bingo, a friendly digital pet...
+│    PERSONALITY: friendly, energetic...
+│  """)])
+│
+└─ Dynamic Instruction (runtime, state-based)
+   provide_dynamic_instruction(ctx) →
+   "CURRENT MOOD: hungry
+    You need food urgently..."
+
+STAGE 5-7: Context Building
+────────────────────────────
+├─ Identity Processor: agent name/role
+├─ Contents Processor: conversation history
+│  - Previous user messages
+│  - Previous agent responses
+│  - Function call/response pairs
+│
+└─ Context Cache Processor: caching config
+
+STAGE 8: PLANNING PROMPT ◄─── OPTIONAL PLANNING LAYER
+──────────────────────────────────────────────────────
+└─ NL Planning Processor (if using PlanReActPlanner)
+   "Follow this process: (1) plan, (2) execute, (3) answer
+    Use tags: /*PLANNING*/ /*ACTION*/ /*REASONING*/ /*FINAL_ANSWER*/"
+
+STAGE 9: Code Execution
+───────────────────────
+└─ Code Execution Processor: setup code env
+
+═══════════════════════════════════════════════════════════════
+                    FINAL LLM REQUEST
+═══════════════════════════════════════════════════════════════
+
+LlmRequest {
+  model: "gemini-2.5-flash"
+  config: GenerateContentConfig(...)
+  contents: [
+    // All assembled prompts and conversation history
+    Content(role="user", parts=[
+      Part(text="[Global Instruction]"),
+      Part(text="[Static Instruction]"),
+      Part(text="[Dynamic Instruction]"),
+      Part(text="[Planning Instruction]"),
+      Part(text="[Conversation History]"),
+      Part(text="[Current User Message]"),
+    ])
+  ]
+  tools: [tool1, tool2, ...]
+}
+
+                         ▼
+
+                  LLM PROCESSING
+
+                         ▼
+
+                  LLM RESPONSE
+
+                         ▼
+
+       RESPONSE PROCESSING (2 processors)
+
+                         ▼
+
+            Tool calls? → Execute → Loop
+                 │
+                 NO
+                 ▼
+            Final Response
+```
+
+### Data Flow Through Prompts
+
+```
+SESSION STATE                PROMPT VARIABLES            LLM REQUEST
+─────────────                ────────────────            ───────────
+
+user_timezone: "PST"  ──►  {user:timezone}     ──►  "User timezone: PST"
+last_fed: 1234567890  ──►  {last_fed}          ──►  [Evaluated to mood]
+artifact: "data.csv"  ──►  {artifact.data.csv} ──►  [File content injected]
+
+
+INSTRUCTION PROVIDERS        DYNAMIC EVALUATION          FINAL PROMPT
+─────────────────────        ──────────────────          ────────────
+
+provide_instruction(ctx) ──► Reads session state  ──►  Current mood text
+                             Calculates hunger
+                             Returns instruction
+
+
+STATIC CONTENT              CONTEXT CACHING             OPTIMIZATION
+──────────────              ───────────────             ────────────
+
+static_instruction    ──►   Cached by LLM API     ──►  Faster responses
+(unchanging text)           Reused across calls        Lower costs
+```
+
+---
+
+**End of AGENT_PIPELINES.md**
+
+For detailed prompt content, see [PROMPTS_DOCUMENTATION.md](PROMPTS_DOCUMENTATION.md).
+
+For quick reference on pipeline types, see the generated `adk_quick_reference.md`.
+
+---
