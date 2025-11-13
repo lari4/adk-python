@@ -372,3 +372,220 @@ response = await agent.invoke(
 ```
 
 ---
+
+## Multi-Agent Delegation Pipeline
+
+**Purpose:** Agent that can dynamically transfer control to sub-agents for specialized tasks.
+
+**When Used:** Complex workflows requiring specialized agents, customer service routing, task delegation, hierarchical agent systems.
+
+**Location:** `/src/google/adk/flows/llm_flows/auto_flow.py`
+
+### Pipeline Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│              MULTI-AGENT DELEGATION PIPELINE                        │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                  AGENT TREE STRUCTURE                            │
+│                                                                   │
+│              ┌────────────────────┐                               │
+│              │   Root Agent       │                               │
+│              │  "dispatcher"      │                               │
+│              └────────┬───────────┘                               │
+│                       │                                           │
+│        ┌──────────────┼──────────────┐                            │
+│        │              │              │                            │
+│        ▼              ▼              ▼                            │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐                        │
+│  │Sub-Agent │  │Sub-Agent │  │Sub-Agent │                        │
+│  │"support" │  │"billing" │  │ "sales"  │                        │
+│  └──────────┘  └──────────┘  └──────────┘                        │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
+
+USER QUERY: "I need help with my bill"
+    │
+    ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 1. ROOT AGENT PROCESSING                                     │
+│                                                               │
+│ ┌───────────────────────────────────────────────────────┐    │
+│ │ Agent Transfer Request Processor                      │    │
+│ │ • Adds transfer_to_agent tool to available tools      │    │
+│ │ • Tool signature:                                     │    │
+│ │   transfer_to_agent(                                  │    │
+│ │     agent_name: str,                                  │    │
+│ │     task: str                                         │    │
+│ │   )                                                   │    │
+│ └───────────────────────────────────────────────────────┘    │
+│                           ▼                                   │
+│ [Standard Request Processing - 9 processors]                 │
+│ • Basic, Auth, Confirmation, Instructions, etc.              │
+│                           ▼                                   │
+│ ┌───────────────────────────────────────────────────────┐    │
+│ │ Root Agent Prompt                                     │    │
+│ │ ───────────────────────────────────────────────────   │    │
+│ │ You are a dispatcher that helps route user queries   │    │
+│ │ to specialized agents.                                │    │
+│ │                                                       │    │
+│ │ Available sub-agents:                                 │    │
+│ │ - support: Customer support issues                    │    │
+│ │ - billing: Billing and payment questions              │    │
+│ │ - sales: Product inquiries and purchases              │    │
+│ │                                                       │    │
+│ │ Analyze the user's request and delegate to the       │    │
+│ │ appropriate agent using transfer_to_agent().          │    │
+│ └───────────────────────────────────────────────────────┘    │
+│                           ▼                                   │
+│ LLM.generate_content()                                       │
+│                           ▼                                   │
+│ ┌───────────────────────────────────────────────────────┐    │
+│ │ LLM Response:                                         │    │
+│ │ function_call {                                       │    │
+│ │   name: "transfer_to_agent"                           │    │
+│ │   args: {                                             │    │
+│ │     "agent_name": "billing",                          │    │
+│ │     "task": "Help user with bill inquiry"             │    │
+│ │   }                                                   │    │
+│ │ }                                                     │    │
+│ └───────────────────────────────────────────────────────┘    │
+└───────────────────────────┬───────────────────────────────────┘
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 2. AGENT TRANSFER EXECUTION                                  │
+│                                                               │
+│ ┌───────────────────────────────────────────────────────┐    │
+│ │ Transfer Handler                                      │    │
+│ │ • Identify target agent: "billing"                    │    │
+│ │ • Validate agent exists in tree                       │    │
+│ │ • Create branch for billing agent execution           │    │
+│ │ • Isolate conversation history                        │    │
+│ └───────────────────────────────────────────────────────┘    │
+│                           ▼                                   │
+│ ┌───────────────────────────────────────────────────────┐    │
+│ │ Branch Isolation                                      │    │
+│ │                                                       │    │
+│ │ Main Branch (Root Agent):                            │    │
+│ │   - Original conversation history                     │    │
+│ │   - Root agent's context                              │    │
+│ │                                                       │    │
+│ │ New Branch (Billing Agent):                          │    │
+│ │   - Fresh context for billing agent                   │    │
+│ │   - Transfer task as new user message                 │    │
+│ │   - Billing agent's instructions                      │    │
+│ └───────────────────────────────────────────────────────┘    │
+└───────────────────────────┬───────────────────────────────────┘
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 3. SUB-AGENT (BILLING) PROCESSING                            │
+│                                                               │
+│ ┌───────────────────────────────────────────────────────┐    │
+│ │ Billing Agent Prompt                                  │    │
+│ │ ───────────────────────────────────────────────────   │    │
+│ │ You are a billing specialist. Help users with:       │    │
+│ │ - Invoice questions                                   │    │
+│ │ - Payment issues                                      │    │
+│ │ - Subscription changes                                │    │
+│ │                                                       │    │
+│ │ Available tools:                                      │    │
+│ │ - get_invoice(invoice_id)                             │    │
+│ │ - process_payment(amount, method)                     │    │
+│ │ - update_subscription(plan)                           │    │
+│ │                                                       │    │
+│ │ User query: "Help user with bill inquiry"             │    │
+│ └───────────────────────────────────────────────────────┘    │
+│                           ▼                                   │
+│ [Full Request Processing Pipeline]                           │
+│ • All 9 request processors run for billing agent             │
+│ • Billing agent's instructions loaded                        │
+│ • Billing tools available                                    │
+│                           ▼                                   │
+│ LLM.generate_content()                                       │
+│                           ▼                                   │
+│ ┌───────────────────────────────────────────────────────┐    │
+│ │ Billing Agent Response:                               │    │
+│ │                                                       │    │
+│ │ "I can help you with your bill. Let me look up       │    │
+│ │  your recent invoices."                               │    │
+│ │                                                       │    │
+│ │ [function_call: get_invoice(user_id)]                 │    │
+│ │ [tool_response: Invoice details...]                   │    │
+│ │                                                       │    │
+│ │ "I see your invoice for $50. Is there a specific     │    │
+│ │  question about this charge?"                         │    │
+│ └───────────────────────────────────────────────────────┘    │
+└───────────────────────────┬───────────────────────────────────┘
+                            ▼
+┌──────────────────────────────────────────────────────────────┐
+│ 4. RESPONSE ROUTING                                          │
+│                                                               │
+│ Three possible outcomes:                                     │
+│                                                               │
+│ A) Stay with Sub-Agent (Continue conversation)               │
+│    ┌─────────────────────────────────────────┐               │
+│    │ Billing agent continues handling query  │               │
+│    │ Next user message → Billing agent       │               │
+│    └─────────────────────────────────────────┘               │
+│                                                               │
+│ B) Return to Parent Agent                                    │
+│    ┌─────────────────────────────────────────┐               │
+│    │ Billing agent: transfer_to_agent("root")│               │
+│    │ Control returns to dispatcher           │               │
+│    └─────────────────────────────────────────┘               │
+│                                                               │
+│ C) Transfer to Peer Agent                                    │
+│    ┌─────────────────────────────────────────┐               │
+│    │ Billing agent: transfer_to_agent("sales")              │
+│    │ Lateral transfer to another sub-agent   │               │
+│    └─────────────────────────────────────────┘               │
+│                                                               │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Code Example
+
+```python
+# Define agent hierarchy
+root_agent = LlmAgent(
+    name="dispatcher",
+    model="gemini-2.5-flash",
+    instruction="""
+You are a customer service dispatcher.
+Analyze user queries and route to the appropriate specialist:
+- support: General help and troubleshooting
+- billing: Payment and invoice questions
+- sales: Product information and purchases
+
+Use transfer_to_agent() to delegate tasks.
+    """,
+    sub_agents=[support_agent, billing_agent, sales_agent],
+)
+
+billing_agent = LlmAgent(
+    name="billing",
+    model="gemini-2.5-flash",
+    instruction="""
+You are a billing specialist.
+Handle all payment, invoice, and subscription queries.
+    """,
+    tools=[get_invoice, process_payment, update_subscription],
+)
+
+# Execution
+response = await root_agent.invoke(
+    user_content=types.Content(
+        parts=[types.Part(text="I was charged twice for my subscription")]
+    )
+)
+
+# Flow:
+# 1. Root agent analyzes: billing issue
+# 2. Calls: transfer_to_agent("billing", "Handle duplicate charge")
+# 3. Billing agent receives task in isolated branch
+# 4. Billing agent uses tools to investigate and resolve
+```
+
+---
